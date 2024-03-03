@@ -1,0 +1,517 @@
+---
+title: "CTA-ED Exercise 3: Comparison and complexity"
+author: "[name here]"
+date: "2/28/2024"
+output: html_document
+---
+
+## Introduction
+
+The hands-on exercise for this week focuses on: 1) comparing texts; 2) measuring he document-level characteristics of text---here, complexity.
+
+In this tutorial, you will learn how to:
+  
+* Compare texts using character-based measures of similarity and distance
+* Compare texts using term-based measures of similarity and distance
+* Calculate the complexity of texts
+* Replicate analyses from @schoonvelde_liberals_2019
+
+## Setup 
+
+Before proceeding, we'll load the remaining packages we will need for this tutorial.
+
+```{r, echo=F}
+library(kableExtra)
+```
+
+```{r, message=F}
+library(readr) # more informative and easy way to import data
+library(quanteda) # includes functions to implement Lexicoder
+library(quanteda.textstats) # for estimating similarity and complexity measures
+library(stringdist) # for basic character-based distance measures
+library(dplyr) #for wrangling data
+library(tibble) #for wrangling data
+library(ggplot2) #for visualization
+```
+
+
+For this example we'll be using data from the 2017-2018 Theresa May Cabinet in the UK. The data are tweets by members of this cabinet. 
+
+```{r}
+tweets  <- readRDS(gzcon(url("https://github.com/cjbarrie/CTA-ED/blob/main/data/comparison-complexity/cabinet_tweets.rds?raw=true")))
+```
+
+And we see that the data contain three variables: "username," which is the username of the MP in question; "tweet," which is the text of the given tweet, and "date" in days in yyyy-mm-dd format. 
+
+```{r}
+head(tweets)
+```
+
+And there are 24 MPs whose tweets we're examining. 
+
+```{r}
+unique(tweets$username)
+
+length(unique(tweets$username))
+```
+
+## Generate document feature matrix
+
+In order to use the `quanteda` package and its accompanying `quanteda.textstats` package, we need to reformat the data into a quanteda "corpus" object. To do this we just need to specify the text we're interested in as well as any associated document-level variables in which we're interested. 
+
+We can do this as follows. 
+
+```{r}
+#make corpus object, specifying tweet as text field
+tweets_corpus <- corpus(tweets, text_field = "tweet")
+
+#add in username document-level information
+docvars(tweets_corpus, "username") <- tweets$username
+
+tweets_corpus
+```
+
+We are now ready to reformat the data into a document feature matrix.
+
+```{r}
+dfmat <- dfm(tokens(tweets_corpus),
+             remove_punct = TRUE, 
+             remove = stopwords("english"))
+
+dfmat
+```
+
+Note that when we do this we need to have tokenized our corpus object first. We can do this by wrapping the `tokens` function inside the `dfm()` function as above. 
+
+So what is this object? Well the documents here are tweets. And the matrix is a sparse (i.e., mostly zeroes) matrix of 1s and 0s for whether a given word appears in the document (tweet) in question. 
+
+The vertical elements (columns) of this vector are made up of all the words used in all of the tweets combined. Here, it helps to imagine every tweet positioned side by side to understand what's going on here. 
+
+## Compare between MPs
+
+Once we have our data in this format, we are ready to compare between the text produced by members of Theresa May's Cabinet.
+
+Here's an example of the correlations between the combined tweets of 5 of the MPs with each other.
+
+```{r}
+corrmat <- dfmat %>%
+  dfm_group(groups = username) %>%
+  textstat_simil(margin = "documents", method = "correlation")
+
+corrmat[1:5,1:5]
+
+```
+
+Note that here we're using the `dfm_group()` function, which allows you to take a document feature matrix and make calculations while grouping by one of the document-level variables we specified above. 
+
+There are many different measures of similarity, however, that we might think about using.
+
+In the below, we combine four different measures of similarity, and see how they compare to each other across MPs. Note that here we're looking only at the similarity between an MP's tweets and those of then Prime Minister, Theresa May.
+
+## Compare between measures
+
+Let's see what this looks like for one of these measures---cosine similarity.
+
+We first get similarities between the text of MP tweets and all other MPs.
+
+```{r}
+
+#estimate similarity, grouping by username
+
+cos_sim <- dfmat %>%
+  dfm_group(groups = username) %>%
+  textstat_simil(margin = "documents", method = "cosine") #specify method here as character object
+
+```
+
+But remember we're only interested in how they compare to what Theresa May has been saying. 
+
+So we need to take these cosine similarities and retain only those similarity measures corresponding to the text of Theresa May's tweets. 
+
+We first convert the `textstat_simil()` output to a matrix.
+
+```{r}
+
+cosmat <- as.matrix(cos_sim) #convert to a matrix
+  
+```
+
+And we can see that the 23rd row of this matrix contains the similarity measures with the Theresa May tweets. 
+
+We take this row, removing the similarity of Theresa May with herself (which will always = 1), and convert it to a datframe object. 
+
+```{r}
+#generate data frame keeping only the row for Theresa May
+cosmatdf <- as.data.frame(cosmat[23, c(1:22, 24)])
+```
+
+We then rename the cosine similarity column with an appropriate name and convert row names to a column variable so that we have cells containing information on the MP to which the cosine similarity measure refers. 
+
+```{r}
+#rename column
+colnames(cosmatdf) <- "corr_may"
+  
+#create column variable from rownames
+cosmatdf <- tibble::rownames_to_column(cosmatdf, "username")
+```
+
+And like so we have our data in tidy format, which we can then plot like so. 
+
+```{r}
+ggplot(cosmatdf) +
+  geom_point(aes(x=reorder(username, -corr_may), y= corr_may)) + 
+  coord_flip() +
+  xlab("MP username") +
+  ylab("Cosine similarity score") + 
+  theme_minimal()
+
+```
+
+Combining these steps into a single `for` loop, we can see how our different similarity measures of interest compare. 
+
+```{r}
+
+#specify different similarity measures to explore
+methods <- c("correlation", "cosine", "dice", "edice")
+
+#create empty dataframe
+testdf_all <- data.frame()
+
+#gen for loop across methods types
+for (i in seq_along(methods)) {
+  
+  #pass method to character string object
+  sim_method <- methods[[i]]
+  
+  #estimate similarity, grouping by username
+  test <- dfmat %>%
+    dfm_group(groups = username) %>%
+    textstat_simil(margin = "documents", method = sim_method) #specify method here as character object created above
+  
+  testm <- as.matrix(test) #convert to a matrix
+  
+  #generate data frame keeping only the row for Theresa May
+  testdf <- as.data.frame(testm[23, c(1:22, 24)])
+  
+  #rename column
+  colnames(testdf) <- "corr_may"
+  
+  #create column variable from rownames
+  testdf <- tibble::rownames_to_column(testdf, "username")
+  
+  #record method in new column variable
+  testdf$method <- sim_method
+
+  #bind all together
+  testdf_all <- rbind(testdf_all, testdf)  
+  
+}
+
+#create variable (for viz only) that is mean of similarity scores for each MP
+testdf_all <- testdf_all %>%
+  group_by(username) %>%
+  mutate(mean_sim = mean(corr_may))
+
+ggplot(testdf_all) +
+  geom_point( aes(x=reorder(username, -mean_sim), y= corr_may, color = method)) + 
+  coord_flip() +
+  xlab("MP username") +
+  ylab("Similarity score") + 
+  theme_minimal()
+
+```
+
+## Complexity
+
+We now move to document-level measures of text characteristics. And here we will focus on the paper by @schoonvelde_liberals_2019. 
+
+We will be using a subset of these data, taken from EU speeches given by four politicians. These are provided by the authors at [https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/S4IZ8K](https://dataverse.harvard.edu/dataset.xhtml?persistentId=doi:10.7910/DVN/S4IZ8K).
+
+We can load the data as follows.
+
+```{r}
+
+speeches  <- readRDS(gzcon(url("https://github.com/cjbarrie/CTA-ED/blob/main/data/comparison-complexity/speeches.rds?raw=true")))
+
+```
+
+And we can take a look at what the data contains below.
+
+```{r}
+
+head(speeches)
+
+```
+
+The data contain speeches by four different politicians, each of whom are positioned at different points on a liberal-conservative scale.
+
+We can then calculate the Flesch-Kincaid readability/complexity score with the `quanteda.textstats` package like so.
+
+```{r}
+speeches$flesch.kincaid <- textstat_readability(speeches$text, measure = "Flesch.Kincaid")
+# returned as quanteda data.frame with document-level information;
+# need just the score:
+speeches$flesch.kincaid <- speeches$flesch.kincaid$Flesch.Kincaid
+
+```
+
+We want this information aggregated over each of our politicians: Gordon Brown, Jose Zapatero", David Cameron, and Mariano Rajoy. These are recorded in the data under a column called "speaker."
+
+```{r}
+#get mean and standard deviation of Flesch-Kincaid, and N of speeches for each speaker
+sum_corpus <- speeches %>%
+  group_by(speaker) %>%
+  summarise(mean = mean(flesch.kincaid, na.rm=TRUE),
+                   SD=sd(flesch.kincaid, na.rm=TRUE),
+                   N=length(speaker))
+
+# calculate standard errors and confidence intervals
+sum_corpus$se <- sum_corpus$SD / sqrt(sum_corpus$N)
+sum_corpus$min <- sum_corpus$mean - 1.96*sum_corpus$se
+sum_corpus$max <- sum_corpus$mean + 1.96*sum_corpus$se
+```
+
+And this gives us data in tidy format that looks like so. 
+
+```{r}
+sum_corpus
+```
+
+Which we can then plot---and we see that our results look like those in Figure 1 of the published article by @schoonvelde_liberals_2019. 
+
+
+```{r}
+
+ggplot(sum_corpus, aes(x=speaker, y=mean)) +
+  geom_bar(stat="identity") + 
+  geom_errorbar(ymin=sum_corpus$min,ymax=sum_corpus$max, width=.2) +
+  coord_flip() +
+  xlab("") +
+  ylab("Mean Complexity") + 
+  theme_minimal() + 
+  ylim(c(0,20))
+
+```
+
+## Exercises
+
+1. Compute distance measures such as "euclidean" or "manhattan" for the MP tweets as above, comparing between tweets by MPs and tweets by PM, Theresa May. 
+
+```{r ex1distance}
+
+#specify different distance measures to explore
+methods_d <- c("euclidean", "manhattan")
+
+#create empty dataframe
+testdf_all_d <- data.frame()
+
+#gen for loop across methods types
+for (i in seq_along(methods_d)) {
+  
+  #pass method to character string object
+  dist_method <- methods_d[[i]]
+  
+  #estimate similarity, grouping by username
+  test_d<- dfmat %>%
+    dfm_group(groups = username) %>%
+    textstat_dist(margin = "documents", method = dist_method) #specify method here as character object created above
+  
+  testm_d <- as.matrix(test_d) #convert to a matrix
+  
+  #generate data frame keeping only the row for Theresa May
+  testdf_d <- as.data.frame(testm_d[23, c(1:22, 24)])
+  
+  #rename column
+  colnames(testdf_d) <- "dist_may"
+  
+  #create column variable from rownames
+  testdf_d<- tibble::rownames_to_column(testdf_d, "username")
+  
+  #record method in new column variable
+  testdf_d$method <- dist_method
+
+  #bind all together
+  testdf_all_d <- rbind(testdf_all_d, testdf_d)  
+  
+}
+
+#create variable (for viz only) that is mean of similarity scores for each MP
+testdf_all_d<- testdf_all_d %>%
+  group_by(username) %>%
+  mutate(mean_dist = mean(dist_may))
+
+ggplot(testdf_all_d) +
+  geom_point( aes(x=reorder(username, mean_dist), y= dist_may, color = method)) + 
+  coord_flip() +
+  xlab("MP username") +
+  ylab("Distance score") + 
+  theme_minimal()
+
+```
+
+2. Estimate at least three other complexity measures for the EU speeches as above. Consider how the results compare to the Flesch-Kincaid measure used in the article by @schoonvelde_liberals_2019.
+
+```{r ex2complexity eval=F}
+#specify different complexity measures to explore
+methods_c <- c("Flesch.Kincaid","ARI", "Coleman", "FORCAST")
+
+#create empty dataframe
+testdf_all_c <- data.frame()
+
+#gen for loop across methods types
+for (i in seq_along(methods_c)) {
+  
+  #pass method to character string object
+  comp_method <- methods_c[[i]]
+  
+#find the readability score (taking the column with the score)
+text_compc <- textstat_readability(speeches$text, measure = comp_method)[,2]
+
+sum_corpus <- speeches
+sum_corpus$text_comp<-text_compc
+
+#record method in new column variable
+sum_corpus$method <- comp_method
+                                             
+#get mean and standard deviation of Flesch-Kincaid, and N of speeches for each speaker
+sum_corpus<-sum_corpus%>% 
+  group_by(speaker,method)%>%
+summarise(sum_corpus, mean = mean(text_comp, na.rm=TRUE),
+                   SD=sd(text_comp, na.rm=TRUE),
+                   N=length(speaker))
+
+# calculate standard errors and confidence intervals, put them in the df ??
+
+
+  #bind all together
+  testdf_all_c <- rbind(testdf_all_c, sum_corpus)  
+}
+
+#we look only at summary measures
+methods_summary<-select(testdf_all_c,mean,SD,N,method,speaker)
+methods_summary<-unique(methods_summary)
+#THIS ONLY GAVE NOT BY GROUPS?
+
+methods_summary
+```
+
+Instead, we do them all separately: 
+```{r plot ex2final}
+
+
+#FLESH KINCAID
+speeches$flesch.kincaid <- textstat_readability(speeches$text, measure = "Flesch.Kincaid")
+# returned as quanteda data.frame with document-level information;
+# need just the score:
+speeches$flesch.kincaid <- speeches$flesch.kincaid$Flesch.Kincaid
+
+#get mean and standard deviation of Flesch-Kincaid, and N of speeches for each speaker
+sum_corpusfk <- speeches %>%
+  group_by(speaker) %>%
+  summarise(mean = mean(flesch.kincaid, na.rm=TRUE),
+                   SD=sd(flesch.kincaid, na.rm=TRUE),
+                   N=length(speaker))
+
+# calculate standard errors and confidence intervals
+sum_corpusfk$se <- sum_corpus$SD / sqrt(sum_corpus$N)
+sum_corpusfk$min <- sum_corpus$mean - 1.96*sum_corpus$se
+sum_corpusfk$max <- sum_corpus$mean + 1.96*sum_corpus$se
+
+#show method
+sum_corpusfk$method<-"Flesch Kincaid"
+
+#ARI
+
+speeches$ARI <- textstat_readability(speeches$text, measure = "ARI")
+# returned as quanteda data.frame with document-level information;
+# need just the score:
+speeches$ARI <- speeches$ARI$ARI
+
+#get mean and standard deviation of Flesch-Kincaid, and N of speeches for each speaker
+sum_corpusa <- speeches %>%
+  group_by(speaker) %>%
+  summarise(mean = mean(ARI, na.rm=TRUE),
+                   SD=sd(ARI, na.rm=TRUE),
+                   N=length(speaker))
+
+# calculate standard errors and confidence intervals
+sum_corpusa$se <- sum_corpus$SD / sqrt(sum_corpus$N)
+sum_corpusa$min <- sum_corpus$mean - 1.96*sum_corpus$se
+sum_corpusa$max <- sum_corpus$mean + 1.96*sum_corpus$se
+
+#show method
+sum_corpusa$method<-"ARI"
+
+
+#Coleman
+speeches$Coleman <- textstat_readability(speeches$text, measure = "Coleman")
+# returned as quanteda data.frame with document-level information;
+# need just the score:
+speeches$Coleman<- speeches$Coleman$Coleman
+
+#get mean and standard deviation of Flesch-Kincaid, and N of speeches for each speaker
+sum_corpusc <- speeches %>%
+  group_by(speaker) %>%
+  summarise(mean = mean(Coleman, na.rm=TRUE),
+                   SD=sd(Coleman, na.rm=TRUE),
+                   N=length(speaker))
+
+# calculate standard errors and confidence intervals
+sum_corpusc$se <- sum_corpus$SD / sqrt(sum_corpus$N)
+sum_corpusc$min <- sum_corpus$mean - 1.96*sum_corpus$se
+sum_corpusc$max <- sum_corpus$mean + 1.96*sum_corpus$se
+
+
+#show method
+sum_corpusc$method<-"Coleman"
+
+#FORCAST
+
+speeches$FORCAST<- textstat_readability(speeches$text, measure = "FORCAST")
+# returned as quanteda data.frame with document-level information;
+# need just the score:
+speeches$FORCAST <- speeches$FORCAST$FORCAST
+
+#get mean and standard deviation of Flesch-Kincaid, and N of speeches for each speaker
+sum_corpusf <- speeches %>%
+  group_by(speaker) %>%
+  summarise(mean = mean(FORCAST, na.rm=TRUE),
+                   SD=sd(FORCAST, na.rm=TRUE),
+                   N=length(speaker))
+
+# calculate standard errors and confidence intervals
+sum_corpusf$se <- sum_corpus$SD / sqrt(sum_corpus$N)
+sum_corpusf$min <- sum_corpus$mean - 1.96*sum_corpus$se
+sum_corpusf$max <- sum_corpus$mean + 1.96*sum_corpus$se
+
+#show method
+sum_corpusf$method<-"Forcast"
+
+
+
+#Bind them together
+sum_corpuses<-rbind(sum_corpusf,sum_corpusfk,sum_corpusa,sum_corpusc)
+sum_corpuses$method<-as.factor(sum_corpuses$method)
+sum_corpuses
+
+```
+
+
+We plot these to view them so we can consider how the results compare to the Flesch-Kincaid measure used in the article by @schoonvelde_liberals_2019.
+
+```{r plot}
+
+ggplot(sum_corpuses, aes(x=speaker, y=mean)) +
+    facet_grid(sum_corpuses$method) +
+  geom_bar(stat="identity") + 
+  coord_flip() +
+  xlab("") +
+  ylab("Mean Complexity") + 
+  theme_minimal() + 
+  ylim(c(0,20))
+
+```
+We can se wider variation based between speakers based on the Flesch Kincaid measure, ARi and Coleman measures. While forcast gives similarity between Brown and Cameron, teh others show that Brown had higher complexity than Cameron. 
+
+
+3. (Advanced---optional) Estimate similarity scores between the MP tweets and the PM tweets for each week contained in the data. Plot the results. 
